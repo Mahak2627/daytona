@@ -3,7 +3,15 @@
  * SPDX-License-Identifier: AGPL-3.0
  */
 
-import { ForbiddenException, Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common'
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+  Optional,
+} from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Not, Repository, LessThan, In, JsonContains, FindOptionsWhere, ILike, Like } from 'typeorm'
 import { Sandbox } from '../entities/sandbox.entity'
@@ -50,10 +58,10 @@ import { VolumeService } from './volume.service'
 import { PaginatedList } from '../../common/interfaces/paginated-list.interface'
 import { checkRecoverable } from '../utils/recoverable.util'
 import {
-  SandboxSortField,
-  SandboxSortDirection,
-  DEFAULT_SANDBOX_SORT_FIELD,
-  DEFAULT_SANDBOX_SORT_DIRECTION,
+  SandboxSortFieldDeprecated,
+  SandboxSortDirectionDeprecated,
+  DEFAULT_SANDBOX_SORT_FIELD_DEPRECATED,
+  DEFAULT_SANDBOX_SORT_DIRECTION_DEPRECATED,
 } from '../dto/list-sandboxes-query.deprecated.dto'
 import { createRangeFilter } from '../../common/utils/range-filter'
 import { LogExecution } from '../../common/decorators/log-execution.decorator'
@@ -71,6 +79,9 @@ import { PortPreviewUrlDto } from '../dto/port-preview-url.dto'
 import { RegionService } from '../../region/services/region.service'
 import { DefaultRegionRequiredException } from '../../organization/exceptions/DefaultRegionRequiredException'
 import { PaginatedSandboxesDto } from '../dto/paginated-sandboxes.dto'
+import { SearchSandboxesQueryDto } from '../dto/search-sandboxes-query.dto'
+import { SANDBOX_SEARCH_ADAPTER } from '../constants/sandbox-tokens'
+import { SandboxSearchAdapter } from '../interfaces/sandbox-search.interface'
 
 const DEFAULT_CPU = 1
 const DEFAULT_MEMORY = 1
@@ -101,6 +112,9 @@ export class SandboxService {
     private readonly organizationUsageService: OrganizationUsageService,
     private readonly redisLockProvider: RedisLockProvider,
     private readonly regionService: RegionService,
+    @Optional()
+    @Inject(SANDBOX_SEARCH_ADAPTER)
+    private readonly sandboxSearchAdapter?: SandboxSearchAdapter,
   ) {}
 
   protected getLockKey(id: string): string {
@@ -761,8 +775,8 @@ export class SandboxService {
       lastEventBefore?: Date
     },
     sort?: {
-      field?: SandboxSortField
-      direction?: SandboxSortDirection
+      field?: SandboxSortFieldDeprecated
+      direction?: SandboxSortDirectionDeprecated
     },
   ): Promise<PaginatedList<Sandbox>> {
     const pageNum = Number(page)
@@ -786,8 +800,10 @@ export class SandboxService {
       lastEventBefore,
     } = filters || {}
 
-    const { field: sortField = DEFAULT_SANDBOX_SORT_FIELD, direction: sortDirection = DEFAULT_SANDBOX_SORT_DIRECTION } =
-      sort || {}
+    const {
+      field: sortField = DEFAULT_SANDBOX_SORT_FIELD_DEPRECATED,
+      direction: sortDirection = DEFAULT_SANDBOX_SORT_DIRECTION_DEPRECATED,
+    } = sort || {}
 
     const baseFindOptions: FindOptionsWhere<Sandbox> = {
       organizationId,
@@ -833,7 +849,7 @@ export class SandboxService {
           direction: sortDirection,
           nulls: 'LAST',
         },
-        ...(sortField !== SandboxSortField.CREATED_AT && { createdAt: 'DESC' }),
+        ...(sortField !== SandboxSortFieldDeprecated.CREATED_AT && { createdAt: 'DESC' }),
       },
       skip: (pageNum - 1) * limitNum,
       take: limitNum,
@@ -852,7 +868,7 @@ export class SandboxService {
    * @param organizationId - The ID of the organization
    * @param cursor - The cursor to use for pagination, if omitted, will return the newest sandboxes
    * @param limit - The number of sandboxes to return per page
-   * @param filters - The filters to apply to the list
+   * @param filters - The filters to apply
    * @returns The paginated list of sandboxes
    * @throws BadRequestError if the cursor is invalid
    * @throws BadRequestError if the name and states filters are combined
@@ -942,6 +958,53 @@ export class SandboxService {
       }),
       nextCursor,
     }
+  }
+
+  /**
+   * Search sandboxes
+   * @param organizationId - The ID of the organization
+   * @param query - The query parameters
+   * @returns The paginated list of sandboxes. If cursor is omitted from the query, newest sandboxes will be returned.
+   * @throws BadRequestError if the cursor is invalid
+   * @throws BadRequestError if the search adapter is not configured
+   */
+  async search(organizationId: string, query: SearchSandboxesQueryDto): Promise<PaginatedSandboxesDto> {
+    if (!this.sandboxSearchAdapter) {
+      throw new BadRequestError('Sandbox search is not configured')
+    }
+
+    let parsedLabels: { [key: string]: string } | undefined
+    if (query.labels) {
+      try {
+        parsedLabels = JSON.parse(query.labels)
+      } catch {
+        throw new BadRequestError('Invalid labels JSON format')
+      }
+    }
+
+    return this.sandboxSearchAdapter.search(organizationId, query.cursor, query.limit, {
+      id: query.id,
+      name: query.name,
+      labels: parsedLabels,
+      includeErroredDeleted: query.includeErroredDeleted,
+      states: query.states,
+      snapshots: query.snapshots,
+      regionIds: query.regionIds,
+      minCpu: query.minCpu,
+      maxCpu: query.maxCpu,
+      minMemoryGiB: query.minMemoryGiB,
+      maxMemoryGiB: query.maxMemoryGiB,
+      minDiskGiB: query.minDiskGiB,
+      maxDiskGiB: query.maxDiskGiB,
+      isPublic: query.isPublic,
+      isRecoverable: query.isRecoverable,
+      createdAtAfter: query.createdAtAfter,
+      createdAtBefore: query.createdAtBefore,
+      lastEventAfter: query.lastEventAfter,
+      lastEventBefore: query.lastEventBefore,
+      sort: query.sort,
+      order: query.order,
+    })
   }
 
   private getExpectedDesiredStateForState(state: SandboxState): SandboxDesiredState | undefined {

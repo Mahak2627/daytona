@@ -48,6 +48,9 @@ import { SandboxRepository } from './repositories/sandbox.repository'
 import { ProxyCacheInvalidationService } from './services/proxy-cache-invalidation.service'
 import { RegionModule } from '../region/region.module'
 import { Region } from '../region/entities/region.entity'
+import { OpensearchModule } from 'nestjs-opensearch'
+import { TypedConfigService } from '../config/typed-config.service'
+import { SandboxSearchAdapterProvider } from './providers/sandbox-search.provider'
 
 @Module({
   imports: [
@@ -67,6 +70,12 @@ import { Region } from '../region/entities/region.entity'
       SshAccess,
       Region,
     ]),
+    OpensearchModule.forRootAsync({
+      inject: [TypedConfigService],
+      useFactory: (configService: TypedConfigService) => {
+        return configService.getOpenSearchConfig()
+      },
+    }),
   ],
   controllers: [
     SandboxController,
@@ -98,6 +107,7 @@ import { Region } from '../region/entities/region.entity'
     SandboxStopAction,
     SandboxDestroyAction,
     SandboxArchiveAction,
+    SandboxSearchAdapterProvider,
     {
       provide: SandboxRepository,
       inject: [DataSource],
