@@ -3,7 +3,6 @@
 
 import asyncio
 import json
-import time
 import warnings
 from copy import deepcopy
 from importlib.metadata import version
@@ -25,7 +24,7 @@ from daytona_toolbox_api_client_async import ApiClient as ToolboxApiClient
 from environs import Env
 
 from .._utils.enum import to_enum
-from .._utils.errors import DaytonaError, intercept_errors
+from .._utils.errors import intercept_errors
 from .._utils.stream import process_streaming_response
 from .._utils.timeout import with_timeout
 from ..code_toolbox.sandbox_js_code_toolbox import SandboxJsCodeToolbox
@@ -38,6 +37,7 @@ from ..common.daytona import (
     DaytonaConfig,
     Image,
 )
+from ..common.errors import DaytonaError
 from .sandbox import AsyncPaginatedSandboxes, AsyncSandbox
 from .snapshot import AsyncSnapshotService
 from .volume import AsyncVolumeService
@@ -342,6 +342,7 @@ class AsyncDaytona:
         """
 
     @intercept_errors(message_prefix="Failed to create sandbox: ")
+    @with_timeout()
     async def create(
         self,
         params: Optional[Union[CreateSandboxFromSnapshotParams, CreateSandboxFromImageParams]] = None,
@@ -357,11 +358,6 @@ class AsyncDaytona:
 
         return await self._create(params, timeout=timeout, on_snapshot_create_logs=on_snapshot_create_logs)
 
-    @with_timeout(
-        error_message=lambda self, timeout: (
-            f"Failed to create and start sandbox within {timeout} seconds timeout period."
-        )
-    )
     async def _create(
         self,
         params: Optional[Union[CreateSandboxFromSnapshotParams, CreateSandboxFromImageParams]] = None,
@@ -373,8 +369,6 @@ class AsyncDaytona:
 
         if timeout < 0:
             raise DaytonaError("Timeout must be a non-negative number")
-
-        start_time = time.time()
 
         if params.auto_stop_interval is not None and params.auto_stop_interval < 0:
             raise DaytonaError("auto_stop_interval must be a non-negative integer")
@@ -468,13 +462,9 @@ class AsyncDaytona:
         )
 
         if sandbox.state != SandboxState.STARTED:
-            # Wait for sandbox to start
-            try:
-                time_elapsed = time.time() - start_time
-                await sandbox.wait_for_sandbox_start(timeout=max(0.001, timeout - time_elapsed) if timeout else timeout)
-            finally:
-                # If not Daytona SaaS, we don't need to handle pulling image state
-                pass
+            # Wait for sandbox to start. This method already handles a timeout,
+            # so we don't need to pass one to internal methods.
+            await sandbox.wait_for_sandbox_start(timeout=0)
 
         return sandbox
 
